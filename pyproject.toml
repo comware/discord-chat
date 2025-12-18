@@ -1,0 +1,39 @@
+[project]
+name = "discord-chat"
+version = "0.1.0"
+description = "A CLI application"
+readme = "README.md"
+requires-python = ">=3.11.12"
+dependencies = [
+    "click>=8.1.0",
+]
+
+[project.scripts]
+discord-chat = "cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+    "ruff>=0.4.0",
+    "black>=24.0.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = []
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

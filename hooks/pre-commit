@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -e
+
+echo "Running pre-commit checks..."
+
+make lint format
+
+# Optionally run tests (comment out for faster commits)
+# make test
+
+echo "✓ Pre-commit checks passed"
