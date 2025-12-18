@@ -11,9 +11,11 @@ from discord_chat.services.discord_client import ChannelMessages, ServerDigestDa
 from discord_chat.services.llm import LLMError, get_provider
 from discord_chat.services.llm.base import LLMProvider
 from discord_chat.utils.digest_formatter import (
+    InvalidServerNameError,
     format_messages_for_llm,
     format_time_range,
     get_default_output_filename,
+    validate_server_name,
 )
 
 
@@ -128,6 +130,95 @@ class TestDigestFormatter:
         # Should not contain special chars
         assert "@" not in filename
         assert "#" not in filename
+
+
+class TestServerNameValidation:
+    """Tests for server name validation (security)."""
+
+    def test_validate_server_name_valid(self):
+        """Test validation passes for normal server names."""
+        assert validate_server_name("My Server") == "My Server"
+        assert validate_server_name("  Trimmed  ") == "Trimmed"
+        assert validate_server_name("Server123") == "Server123"
+
+    def test_validate_server_name_empty(self):
+        """Test validation fails for empty names."""
+        with pytest.raises(InvalidServerNameError) as exc_info:
+            validate_server_name("")
+        assert "empty" in str(exc_info.value).lower()
+
+        with pytest.raises(InvalidServerNameError):
+            validate_server_name("   ")
+
+    def test_validate_server_name_path_traversal(self):
+        """Test validation blocks path traversal attempts."""
+        with pytest.raises(InvalidServerNameError) as exc_info:
+            validate_server_name("../../../etc/passwd")
+        assert "path traversal" in str(exc_info.value).lower()
+
+        with pytest.raises(InvalidServerNameError):
+            validate_server_name("server/../secret")
+
+        with pytest.raises(InvalidServerNameError):
+            validate_server_name("/etc/passwd")
+
+        with pytest.raises(InvalidServerNameError):
+            validate_server_name("\\windows\\system32")
+
+    def test_validate_server_name_control_chars(self):
+        """Test validation blocks control characters."""
+        with pytest.raises(InvalidServerNameError) as exc_info:
+            validate_server_name("server\x00name")
+        assert "control" in str(exc_info.value).lower()
+
+        with pytest.raises(InvalidServerNameError):
+            validate_server_name("server\nname")
+
+    def test_validate_server_name_too_long(self):
+        """Test validation fails for excessively long names."""
+        long_name = "a" * 101
+        with pytest.raises(InvalidServerNameError) as exc_info:
+            validate_server_name(long_name)
+        assert "too long" in str(exc_info.value).lower()
+
+    def test_get_default_output_filename_path_traversal(self):
+        """Test filename generation blocks path traversal."""
+        with pytest.raises(InvalidServerNameError):
+            get_default_output_filename("../../../etc/passwd")
+
+
+class TestHoursValidation:
+    """Tests for hours range validation."""
+
+    @patch("discord_chat.commands.digest.fetch_server_messages")
+    @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "test-token"})
+    def test_digest_hours_too_low(self, mock_fetch):
+        """Test digest command rejects hours < 1."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["digest", "test-server", "--hours", "0"])
+
+        assert result.exit_code != 0
+        assert "Hours must be between" in result.output
+
+    @patch("discord_chat.commands.digest.fetch_server_messages")
+    @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "test-token"})
+    def test_digest_hours_too_high(self, mock_fetch):
+        """Test digest command rejects hours > 168."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["digest", "test-server", "--hours", "200"])
+
+        assert result.exit_code != 0
+        assert "Hours must be between" in result.output
+
+    @patch("discord_chat.commands.digest.fetch_server_messages")
+    @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "test-token"})
+    def test_digest_hours_negative(self, mock_fetch):
+        """Test digest command rejects negative hours."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["digest", "test-server", "--hours", "-5"])
+
+        assert result.exit_code != 0
+        assert "Hours must be between" in result.output
 
 
 class TestLLMProvider:

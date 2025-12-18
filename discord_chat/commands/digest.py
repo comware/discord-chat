@@ -1,6 +1,7 @@
 """Digest command for generating Discord server activity summaries."""
 
 import os
+import stat
 from pathlib import Path
 
 import click
@@ -12,11 +13,32 @@ from discord_chat.services.discord_client import (
 )
 from discord_chat.services.llm import LLMError, get_provider
 from discord_chat.utils.digest_formatter import (
+    InvalidServerNameError,
     create_full_digest,
     format_messages_for_llm,
     format_time_range,
     get_default_output_filename,
+    validate_server_name,
 )
+
+# Constants for validation
+MIN_HOURS = 1
+MAX_HOURS = 168  # 1 week maximum
+
+
+def write_file_secure(path: Path, content: str) -> None:
+    """Write file with secure permissions (owner read/write only).
+
+    Args:
+        path: Path to write to.
+        content: Content to write.
+    """
+    # Use os.open with explicit permissions to avoid race conditions
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+    try:
+        os.write(fd, content.encode("utf-8"))
+    finally:
+        os.close(fd)
 
 
 @click.command()
@@ -54,6 +76,18 @@ def digest(server_name: str, hours: int, llm: str | None, output: str) -> None:
     Requires DISCORD_BOT_TOKEN environment variable to be set.
     For LLM, set ANTHROPIC_API_KEY (Claude) or OPENAI_API_KEY (OpenAI).
     """
+    # Validate server name to prevent path traversal
+    try:
+        validated_server_name = validate_server_name(server_name)
+    except InvalidServerNameError as e:
+        raise click.ClickException(str(e))
+
+    # Validate hours range
+    if hours < MIN_HOURS or hours > MAX_HOURS:
+        raise click.ClickException(
+            f"Hours must be between {MIN_HOURS} and {MAX_HOURS}. Got: {hours}"
+        )
+
     # Validate environment
     if not os.environ.get("DISCORD_BOT_TOKEN"):
         raise click.ClickException(
@@ -61,11 +95,11 @@ def digest(server_name: str, hours: int, llm: str | None, output: str) -> None:
             "Create a Discord bot and set its token."
         )
 
-    click.echo(f"Fetching messages from '{server_name}' (last {hours} hours)...")
+    click.echo(f"Fetching messages from '{validated_server_name}' (last {hours} hours)...")
 
     # Fetch messages from Discord
     try:
-        data = fetch_server_messages(server_name, hours)
+        data = fetch_server_messages(validated_server_name, hours)
     except ServerNotFoundError as e:
         raise click.ClickException(str(e))
     except DiscordClientError as e:
@@ -114,5 +148,5 @@ def digest(server_name: str, hours: int, llm: str | None, output: str) -> None:
     filename = get_default_output_filename(data.server_name)
     output_path = output_dir / filename
 
-    output_path.write_text(full_digest, encoding="utf-8")
+    write_file_secure(output_path, full_digest)
     click.echo(f"Digest saved to: {output_path}")

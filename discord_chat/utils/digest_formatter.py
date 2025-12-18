@@ -5,6 +5,51 @@ from datetime import datetime
 from discord_chat.services.discord_client import ServerDigestData
 
 
+class InvalidServerNameError(ValueError):
+    """Raised when server name contains invalid characters."""
+
+    pass
+
+
+def validate_server_name(server_name: str) -> str:
+    """Validate and sanitize server name to prevent path traversal attacks.
+
+    Args:
+        server_name: Raw server name from user input.
+
+    Returns:
+        Sanitized server name safe for filesystem operations.
+
+    Raises:
+        InvalidServerNameError: If server name is empty or contains path traversal attempts.
+    """
+    if not server_name or not server_name.strip():
+        raise InvalidServerNameError("Server name cannot be empty")
+
+    # Remove leading/trailing whitespace
+    name = server_name.strip()
+
+    # Block path traversal patterns
+    if ".." in name or name.startswith("/") or name.startswith("\\"):
+        raise InvalidServerNameError(
+            f"Invalid server name '{server_name}': contains path traversal characters"
+        )
+
+    # Block null bytes and other dangerous characters
+    if "\x00" in name or "\n" in name or "\r" in name:
+        raise InvalidServerNameError(
+            f"Invalid server name '{server_name}': contains control characters"
+        )
+
+    # Limit length to prevent filesystem issues
+    if len(name) > 100:
+        raise InvalidServerNameError(
+            f"Server name too long ({len(name)} chars). Maximum is 100 characters."
+        )
+
+    return name
+
+
 def format_messages_for_llm(data: ServerDigestData) -> str:
     """Format Discord messages into text for LLM consumption.
 
@@ -108,9 +153,30 @@ def get_default_output_filename(server_name: str) -> str:
 
     Returns:
         Filename with timestamp.
+
+    Raises:
+        InvalidServerNameError: If server name is invalid or would result in unsafe filename.
     """
-    # Sanitize server name for filename
-    safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in server_name)
+    # Validate first to block path traversal attempts
+    validated_name = validate_server_name(server_name)
+
+    # Sanitize server name for filename - only allow alphanumeric, hyphen, underscore
+    # Explicitly exclude dots to prevent hidden files or extension manipulation
+    safe_name = "".join(c if c.isalnum() or c in "_- " else "_" for c in validated_name)
     safe_name = safe_name.replace(" ", "-").lower()
+
+    # Remove any leading/trailing underscores or hyphens
+    safe_name = safe_name.strip("-_")
+
+    # Ensure we have something left
+    if not safe_name:
+        safe_name = "unknown-server"
+
     timestamp = datetime.now().strftime("%Y%m%d-%H%M")
-    return f"digest-{safe_name}-{timestamp}.md"
+    filename = f"digest-{safe_name}-{timestamp}.md"
+
+    # Final safety check - ensure no path separators snuck through
+    if "/" in filename or "\\" in filename:
+        raise InvalidServerNameError("Generated filename contains path separators")
+
+    return filename

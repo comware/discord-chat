@@ -48,18 +48,17 @@ class DiscordMessageFetcher:
     and fetching messages from all text channels within a specified time window.
     """
 
-    def __init__(self, token: str | None = None):
+    # Security constants
+    DEFAULT_TIMEOUT = 60.0  # Overall operation timeout in seconds
+    MAX_MESSAGES_PER_CHANNEL = 1000  # Prevent resource exhaustion
+
+    def __init__(self):
         """Initialize the Discord message fetcher.
 
-        Args:
-            token: Discord bot token. If not provided, reads from DISCORD_BOT_TOKEN env var.
+        Token is read exclusively from DISCORD_BOT_TOKEN environment variable
+        for security (prevents token exposure in process listings).
         """
-        self.token = token or os.environ.get("DISCORD_BOT_TOKEN")
-        if not self.token:
-            raise DiscordClientError(
-                "Discord bot token not provided. "
-                "Set DISCORD_BOT_TOKEN environment variable or pass token parameter."
-            )
+        self._token = self._load_token()
 
         # Set up intents - we need message content and guild access
         intents = discord.Intents.default()
@@ -73,6 +72,31 @@ class DiscordMessageFetcher:
         @self._client.event
         async def on_ready():
             self._ready_event.set()
+
+    @staticmethod
+    def _load_token() -> str:
+        """Load and validate Discord bot token from environment.
+
+        Returns:
+            Validated Discord bot token.
+
+        Raises:
+            DiscordClientError: If token is missing or invalid format.
+        """
+        token = os.environ.get("DISCORD_BOT_TOKEN")
+        if not token:
+            raise DiscordClientError(
+                "DISCORD_BOT_TOKEN environment variable is required. "
+                "Set it in your .env file or environment."
+            )
+        token = token.strip()
+        # Discord bot tokens are typically 70+ characters
+        if len(token) < 50:
+            raise DiscordClientError(
+                "Invalid Discord bot token format. "
+                "Token appears too short - please verify your DISCORD_BOT_TOKEN."
+            )
+        return token
 
     async def _wait_until_ready(self, timeout: float = 30.0):
         """Wait for the client to be ready."""
@@ -127,7 +151,10 @@ class DiscordMessageFetcher:
         """
         messages = []
         try:
-            async for message in channel.history(after=after, before=before, limit=None):
+            # Use message limit to prevent resource exhaustion
+            async for message in channel.history(
+                after=after, before=before, limit=self.MAX_MESSAGES_PER_CHANNEL
+            ):
                 # Skip bot messages and empty messages
                 if message.author.bot:
                     continue
@@ -164,22 +191,52 @@ class DiscordMessageFetcher:
         self,
         server_name: str,
         hours: int = 6,
+        timeout: float | None = None,
     ) -> ServerDigestData:
         """Fetch messages from all channels in a server.
 
         Args:
             server_name: Name of the Discord server (case-insensitive).
             hours: Number of hours to look back for messages.
+            timeout: Overall operation timeout in seconds. Defaults to DEFAULT_TIMEOUT.
 
         Returns:
             ServerDigestData containing all messages from the time window.
+
+        Raises:
+            DiscordClientError: On timeout or other Discord-related errors.
+        """
+        operation_timeout = timeout if timeout is not None else self.DEFAULT_TIMEOUT
+
+        try:
+            return await asyncio.wait_for(
+                self._fetch_server_messages_impl(server_name, hours),
+                timeout=operation_timeout,
+            )
+        except TimeoutError:
+            # Ensure cleanup on timeout
+            if not self._client.is_closed():
+                await self._client.close()
+            raise DiscordClientError(
+                f"Operation timed out after {operation_timeout} seconds. "
+                "The server may have too many channels or messages."
+            )
+
+    async def _fetch_server_messages_impl(
+        self,
+        server_name: str,
+        hours: int,
+    ) -> ServerDigestData:
+        """Internal implementation of fetch_server_messages.
+
+        This is separated to allow wrapping with timeout.
         """
         end_time = datetime.now(UTC)
         start_time = end_time - timedelta(hours=hours)
 
         try:
             # Start the client in a background task
-            login_task = asyncio.create_task(self._client.start(self.token))
+            login_task = asyncio.create_task(self._client.start(self._token))
 
             try:
                 # Wait for ready

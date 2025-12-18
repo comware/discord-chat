@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "SlashCommand(/aj:start-interactive)",
+      "Bash(uv sync:*)",
+      "Bash(make check:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(uv run:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ]
+  }
+}
