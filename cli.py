@@ -2,8 +2,13 @@
 """Main CLI entry point for discord-chat."""
 
 import click
+from dotenv import load_dotenv
 
+from discord_chat.commands.digest import digest
 from discord_chat.commands.version import version
+
+# Load environment variables from .env file if present
+load_dotenv()
 
 
 @click.group()
@@ -14,6 +19,7 @@ def main(ctx: click.Context) -> None:
 
 
 # Register commands
+main.add_command(digest)
 main.add_command(version)
 
 
