@@ -1,7 +1,10 @@
-.PHONY: help lint format test version hooks clean all check
+.PHONY: help lint format test version hooks clean all check tne-activity tne-digest
 
 # Suppress command echoing
 MAKEFLAGS += --silent
+
+# Configurable hours for Discord commands (default: 24)
+HOURS ?= 24
 
 # Default target
 .DEFAULT_GOAL := help
@@ -44,3 +47,9 @@ hooks: .git/hooks/pre-commit ## Install git hooks
 	@echo "✓ Pre-commit hook installed"
 
 all: hooks check ## Install hooks and run all checks
+
+tne-activity: ## Show message counts per channel for tne.ai (HOURS=24)
+	uv run python cli.py activity "tne.ai" --hours $(HOURS)
+
+tne-digest: ## Generate digest for tne.ai Discord server (HOURS=24)
+	uv run python cli.py digest "tne.ai" --hours $(HOURS) --output tne-digest --quiet

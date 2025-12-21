@@ -10,6 +10,12 @@ dependencies = [
     "anthropic>=0.18.0",
     "openai>=1.12.0",
     "python-dotenv>=1.0.0",
+    # Security: Pin vulnerable transitive dependencies to patched versions
+    "cryptography>=44.0.1",  # CVE-2024-12797 fix
+    "urllib3>=2.6.0",  # CVE-2025-66418, CVE-2025-66471 fixes
+    "setuptools>=78.1.1",  # CVE-2024-6345, PYSEC-2025-49, PYSEC-2022-43012 fixes
+    "python-multipart>=0.0.18",  # CVE-2024-53981 fix
+    "starlette>=0.49.1",  # CVE-2025-54121, CVE-2025-62727 fixes
 ]
 
 [project.scripts]

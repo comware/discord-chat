@@ -40,6 +40,7 @@ Thumbs.db
 *.log
 .env
 .env.local
+tne-digest/
 
 # Agent metadata
 .agent-jima/

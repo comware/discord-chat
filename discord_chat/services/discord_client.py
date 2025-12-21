@@ -2,10 +2,13 @@
 
 import asyncio
 import os
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import discord
+
+from discord_chat.utils.security_logger import get_security_logger
 
 
 @dataclass
@@ -41,16 +44,82 @@ class ServerNotFoundError(DiscordClientError):
     pass
 
 
+def _get_env_int(name: str, default: int, min_val: int, max_val: int) -> int:
+    """Get an integer from environment with validation.
+
+    Args:
+        name: Environment variable name.
+        default: Default value if not set.
+        min_val: Minimum allowed value.
+        max_val: Maximum allowed value.
+
+    Returns:
+        Validated integer value.
+    """
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        int_val = int(value)
+        if int_val < min_val or int_val > max_val:
+            # Log warning but use default
+            return default
+        return int_val
+    except ValueError:
+        return default
+
+
 class DiscordMessageFetcher:
     """Fetches messages from Discord servers.
 
     This class handles connecting to Discord, finding servers by name,
     and fetching messages from all text channels within a specified time window.
+
+    Thread Safety: NOT thread-safe. Create a new instance for each concurrent operation.
+
+    Configuration via environment variables:
+        DISCORD_CHAT_TIMEOUT: Operation timeout in seconds (default: 60, range: 10-300)
+        DISCORD_CHAT_MAX_MESSAGES: Max messages per channel (default: 1000, range: 100-10000)
+        DISCORD_CHAT_MAX_CONCURRENT: Max concurrent channel fetches (default: 5, range: 1-20)
     """
 
-    # Security constants
+    # Default security constants (can be overridden via environment)
     DEFAULT_TIMEOUT = 60.0  # Overall operation timeout in seconds
-    MAX_MESSAGES_PER_CHANNEL = 1000  # Prevent resource exhaustion
+    DEFAULT_MAX_MESSAGES_PER_CHANNEL = 1000  # Prevent resource exhaustion
+    DEFAULT_MAX_CONCURRENT_CHANNELS = 5  # Rate limiting: max concurrent channel fetches
+    MAX_MESSAGE_CONTENT_LENGTH = 100_000  # Max 100KB per message (CRIT-005 fix)
+
+    @property
+    def max_messages_per_channel(self) -> int:
+        """Get max messages per channel from environment or default."""
+        return _get_env_int(
+            "DISCORD_CHAT_MAX_MESSAGES",
+            self.DEFAULT_MAX_MESSAGES_PER_CHANNEL,
+            min_val=100,
+            max_val=10000,
+        )
+
+    @property
+    def max_concurrent_channels(self) -> int:
+        """Get max concurrent channel fetches from environment or default."""
+        return _get_env_int(
+            "DISCORD_CHAT_MAX_CONCURRENT",
+            self.DEFAULT_MAX_CONCURRENT_CHANNELS,
+            min_val=1,
+            max_val=20,
+        )
+
+    @property
+    def operation_timeout(self) -> float:
+        """Get operation timeout from environment or default."""
+        return float(
+            _get_env_int(
+                "DISCORD_CHAT_TIMEOUT",
+                int(self.DEFAULT_TIMEOUT),
+                min_val=10,
+                max_val=300,
+            )
+        )
 
     def __init__(self):
         """Initialize the Discord message fetcher.
@@ -59,6 +128,7 @@ class DiscordMessageFetcher:
         for security (prevents token exposure in process listings).
         """
         self._token = self._load_token()
+        self._security_logger = get_security_logger()
 
         # Set up intents - we need message content and guild access
         intents = discord.Intents.default()
@@ -72,6 +142,7 @@ class DiscordMessageFetcher:
         @self._client.event
         async def on_ready():
             self._ready_event.set()
+            self._security_logger.log_auth_attempt(True, "Discord")
 
     @staticmethod
     def _load_token() -> str:
@@ -153,7 +224,7 @@ class DiscordMessageFetcher:
         try:
             # Use message limit to prevent resource exhaustion
             async for message in channel.history(
-                after=after, before=before, limit=self.MAX_MESSAGES_PER_CHANNEL
+                after=after, before=before, limit=self.max_messages_per_channel
             ):
                 # Skip bot messages and empty messages
                 if message.author.bot:
@@ -161,19 +232,36 @@ class DiscordMessageFetcher:
                 if not message.content and not message.attachments:
                     continue
 
+                # Truncate message content to prevent memory exhaustion (CRIT-005 fix)
+                content = message.content
+                if len(content) > self.MAX_MESSAGE_CONTENT_LENGTH:
+                    content = content[: self.MAX_MESSAGE_CONTENT_LENGTH] + "...[truncated]"
+
+                # Limit attachments to prevent memory issues
+                attachments = [a.filename for a in message.attachments[:10]]  # Max 10 attachments
+                if len(message.attachments) > 10:
+                    attachments.append(f"...and {len(message.attachments) - 10} more")
+
                 messages.append(
                     {
                         "id": message.id,
-                        "author": message.author.display_name,
+                        "author": message.author.display_name[:100],  # Limit author name
                         "author_id": message.author.id,
-                        "content": message.content,
+                        "content": content,
                         "timestamp": message.created_at.isoformat(),
-                        "attachments": [a.filename for a in message.attachments],
+                        "attachments": attachments,
                         "reactions": [
-                            {"emoji": str(r.emoji), "count": r.count} for r in message.reactions
+                            {"emoji": str(r.emoji)[:20], "count": r.count}  # Limit emoji length
+                            for r in list(message.reactions)[:20]  # Max 20 reactions
                         ],
                     }
                 )
+
+                # HIGH-007 fix: Yield control periodically to prevent memory buildup
+                # Allow garbage collection every 100 messages
+                if len(messages) % 100 == 0:
+                    await asyncio.sleep(0)  # Yield to event loop
+
         except discord.Forbidden:
             # Bot doesn't have permission to read this channel
             pass
@@ -181,11 +269,54 @@ class DiscordMessageFetcher:
             # Log but don't fail on individual channel errors
             print(f"Warning: Could not fetch messages from #{channel.name}: {e}")
 
-        return ChannelMessages(
+        # Sort and return - this creates a new list, old messages can be GC'd
+        result = ChannelMessages(
             channel_name=channel.name,
             channel_id=channel.id,
             messages=sorted(messages, key=lambda m: m["timestamp"]),
         )
+
+        # Clear messages list to help garbage collection (HIGH-007 fix)
+        messages.clear()
+
+        return result
+
+    async def _fetch_channels_with_rate_limiting(
+        self,
+        channels: list[discord.TextChannel],
+        after: datetime,
+        before: datetime,
+    ) -> list[ChannelMessages]:
+        """Fetch messages from multiple channels with rate limiting.
+
+        Args:
+            channels: List of Discord text channels to fetch from.
+            after: Fetch messages after this time.
+            before: Fetch messages before this time.
+
+        Returns:
+            List of ChannelMessages objects.
+        """
+        # Log rate limiting enforcement
+        self._security_logger.log_rate_limit("Discord", self.max_concurrent_channels)
+
+        # Create semaphore to limit concurrent API calls
+        semaphore = asyncio.Semaphore(self.max_concurrent_channels)
+
+        async def fetch_with_semaphore(channel: discord.TextChannel) -> ChannelMessages:
+            """Wrapper to fetch channel messages with semaphore."""
+            start_time = time.time()
+            async with semaphore:
+                result = await self._fetch_channel_messages(channel, after, before)
+            duration_ms = (time.time() - start_time) * 1000
+            self._security_logger.log_api_call(
+                "Discord", f"fetch_messages:{channel.name}", duration_ms, True
+            )
+            return result
+
+        # Fetch all channels with rate limiting
+        tasks = [fetch_with_semaphore(ch) for ch in channels]
+        return await asyncio.gather(*tasks)
 
     async def fetch_server_messages(
         self,
@@ -198,7 +329,7 @@ class DiscordMessageFetcher:
         Args:
             server_name: Name of the Discord server (case-insensitive).
             hours: Number of hours to look back for messages.
-            timeout: Overall operation timeout in seconds. Defaults to DEFAULT_TIMEOUT.
+            timeout: Overall operation timeout in seconds. Defaults to OPERATION_TIMEOUT.
 
         Returns:
             ServerDigestData containing all messages from the time window.
@@ -206,7 +337,7 @@ class DiscordMessageFetcher:
         Raises:
             DiscordClientError: On timeout or other Discord-related errors.
         """
-        operation_timeout = timeout if timeout is not None else self.DEFAULT_TIMEOUT
+        operation_timeout = timeout if timeout is not None else self.operation_timeout
 
         try:
             return await asyncio.wait_for(
@@ -248,11 +379,11 @@ class DiscordMessageFetcher:
                 # Get all text channels
                 text_channels = [ch for ch in guild.channels if isinstance(ch, discord.TextChannel)]
 
-                # Fetch messages from all channels concurrently
-                channel_tasks = [
-                    self._fetch_channel_messages(ch, start_time, end_time) for ch in text_channels
-                ]
-                channel_results = await asyncio.gather(*channel_tasks)
+                # Fetch messages from channels with rate limiting
+                # Use semaphore to limit concurrent API calls
+                channel_results = await self._fetch_channels_with_rate_limiting(
+                    text_channels, start_time, end_time
+                )
 
                 # Filter out empty channels and calculate total
                 channels_with_messages = [ch for ch in channel_results if ch.messages]
@@ -282,13 +413,26 @@ class DiscordMessageFetcher:
                 "in the Discord Developer Portal: "
                 "https://discord.com/developers/applications/ → Bot → Privileged Gateway Intents"
             )
-        except discord.LoginFailure as e:
-            raise DiscordClientError(f"Discord login failed: {e}")
+        except discord.LoginFailure:
+            # Log auth failure
+            self._security_logger.log_auth_attempt(False, "Discord", "Invalid token")
+            # Sanitize login error to prevent credential exposure
+            raise DiscordClientError(
+                "Discord authentication failed. Please verify your DISCORD_BOT_TOKEN."
+            )
+        except discord.HTTPException as e:
+            # Sanitize HTTP errors but include status code
+            status = e.status if hasattr(e, "status") else "unknown"
+            raise DiscordClientError(f"Discord API request failed (status: {status})")
         except Exception:
             # Ensure cleanup on any error
             if not self._client.is_closed():
                 await self._client.close()
-            raise
+            # Generic error message to prevent internal info disclosure
+            raise DiscordClientError(
+                "Failed to fetch Discord messages. "
+                "Please check your connection and bot permissions."
+            )
 
 
 def fetch_server_messages(server_name: str, hours: int = 6) -> ServerDigestData:

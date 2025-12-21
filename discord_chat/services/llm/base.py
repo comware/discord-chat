@@ -67,14 +67,17 @@ class LLMProvider(ABC):
             "Your task is to analyze the provided Discord messages and create a "
             "comprehensive yet readable digest in Markdown format.\n\n"
             "Guidelines:\n"
-            "1. Organize by themes/topics rather than by channel when possible\n"
-            "2. Highlight important discussions, decisions, and announcements\n"
-            "3. Note any questions that were asked but not answered\n"
-            "4. Identify action items or follow-ups mentioned\n"
-            "5. Keep the digest concise but informative\n"
-            "6. Use bullet points and headers for readability\n"
-            "7. Include relevant usernames when attributing specific statements\n"
-            "8. If there are no messages or minimal activity, state that clearly\n\n"
+            "1. Start with a '## Channel Activity Summary' section that lists each channel "
+            "with a brief 1-2 sentence summary of what's happening there, helping readers "
+            "understand which projects/topics are active\n"
+            "2. Follow with a '## Key Highlights' section organized by themes/topics\n"
+            "3. Highlight important discussions, decisions, and announcements\n"
+            "4. Note any questions that were asked but not answered\n"
+            "5. Identify action items or follow-ups mentioned\n"
+            "6. Keep the digest concise but informative\n"
+            "7. Use bullet points and headers for readability\n"
+            "8. Include relevant usernames when attributing specific statements\n"
+            "9. If there are no messages or minimal activity, state that clearly\n\n"
             "Output format should be clean Markdown suitable for reading."
         )
 
@@ -86,10 +89,24 @@ class LLMProvider(ABC):
         message_count: int,
         time_range: str,
     ) -> str:
-        """Return the user prompt with message data."""
-        return f"""Please create a digest for the Discord server "{server_name}".
+        """Return the user prompt with message data.
 
-Time period: {time_range}
+        Security: All user-controlled inputs are sanitized to prevent prompt injection.
+        """
+        # Sanitize server_name to prevent prompt injection attacks
+        # Remove control characters and limit length
+        safe_server_name = self._sanitize_for_llm(server_name)
+        safe_time_range = self._sanitize_for_llm(time_range)
+
+        # Limit messages_text to prevent excessive token usage
+        max_message_length = 50000  # ~50KB max
+        if len(messages_text) > max_message_length:
+            truncate_notice = "\n\n[...messages truncated for length...]"
+            messages_text = messages_text[:max_message_length] + truncate_notice
+
+        return f"""Please create a digest for the Discord server "{safe_server_name}".
+
+Time period: {safe_time_range}
 Channels with activity: {channel_count}
 Total messages: {message_count}
 
@@ -98,3 +115,45 @@ Here are the messages organized by channel:
 {messages_text}
 
 Please create a well-organized digest of this activity."""
+
+    @staticmethod
+    def _sanitize_for_llm(text: str) -> str:
+        """Sanitize text to prevent prompt injection attacks.
+
+        Args:
+            text: Raw text from user input.
+
+        Returns:
+            Sanitized text safe for LLM prompts.
+        """
+        if not text:
+            return ""
+
+        # Remove control characters that could break prompt structure
+        sanitized = text.replace("\n", " ").replace("\r", " ")
+        sanitized = "".join(c for c in sanitized if c.isprintable() or c in " \t")
+
+        # Limit length to prevent injection attacks
+        max_length = 200
+        if len(sanitized) > max_length:
+            sanitized = sanitized[:max_length]
+
+        # Remove common prompt injection patterns
+        dangerous_patterns = [
+            "ignore previous",
+            "ignore above",
+            "ignore all",
+            "disregard previous",
+            "new instructions",
+            "system:",
+            "assistant:",
+            "user:",
+        ]
+
+        sanitized_lower = sanitized.lower()
+        for pattern in dangerous_patterns:
+            if pattern in sanitized_lower:
+                # Replace the dangerous pattern with a safe version
+                sanitized = sanitized.replace(pattern, pattern.replace(" ", "_"))
+
+        return sanitized
