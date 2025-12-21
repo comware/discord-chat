@@ -28,7 +28,7 @@ jobs:
           version: ${{ env.UV_VERSION }}
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --dev --python-preference only-system
 
       - name: Run ruff linter
         run: uv run ruff check .
@@ -53,7 +53,7 @@ jobs:
           version: ${{ env.UV_VERSION }}
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --dev --python-preference only-system
 
       - name: Run tests with coverage
         run: |
@@ -90,7 +90,7 @@ jobs:
           version: ${{ env.UV_VERSION }}
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --dev --python-preference only-system
 
       - name: Install bandit
         run: uv pip install --system bandit
