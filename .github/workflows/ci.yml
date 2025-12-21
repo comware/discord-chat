@@ -9,6 +9,9 @@ on:
 env:
   PYTHON_VERSION: "3.11"
   UV_VERSION: "0.5.11"
+  # Tell uv to use system Python and not be strict about versions
+  UV_PYTHON_PREFERENCE: only-system
+  UV_PYTHON: python3.11
 
 jobs:
   lint:
@@ -28,7 +31,7 @@ jobs:
           version: ${{ env.UV_VERSION }}
 
       - name: Install dependencies
-        run: uv sync --dev --python $(which python)
+        run: uv sync --dev
 
       - name: Run ruff linter
         run: uv run ruff check .
@@ -53,7 +56,7 @@ jobs:
           version: ${{ env.UV_VERSION }}
 
       - name: Install dependencies
-        run: uv sync --dev --python $(which python)
+        run: uv sync --dev
 
       - name: Run tests with coverage
         run: |
@@ -90,7 +93,7 @@ jobs:
           version: ${{ env.UV_VERSION }}
 
       - name: Install dependencies
-        run: uv sync --dev --python $(which python)
+        run: uv sync --dev
 
       - name: Install bandit
         run: uv pip install --system bandit
