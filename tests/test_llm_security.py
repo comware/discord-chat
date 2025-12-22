@@ -172,9 +172,9 @@ class TestTLSVerification:
         # Verify httpx.Client was called with verify=True
         mock_httpx_client.assert_called_once()
         call_kwargs = mock_httpx_client.call_args[1]
-        assert call_kwargs.get("verify") is True, (
-            "TLS verification not enabled for Claude! This is a security vulnerability (CRIT-006)."
-        )
+        assert (
+            call_kwargs.get("verify") is True
+        ), "TLS verification not enabled for Claude! This is a security vulnerability (CRIT-006)."
 
     @patch.dict("os.environ", OPENAI_ENV)
     @patch("openai.OpenAI")
@@ -201,9 +201,9 @@ class TestTLSVerification:
         # Verify httpx.Client was called with verify=True
         mock_httpx_client.assert_called_once()
         call_kwargs = mock_httpx_client.call_args[1]
-        assert call_kwargs.get("verify") is True, (
-            "TLS verification not enabled for OpenAI! This is a security vulnerability (CRIT-006)."
-        )
+        assert (
+            call_kwargs.get("verify") is True
+        ), "TLS verification not enabled for OpenAI! This is a security vulnerability (CRIT-006)."
 
     @patch.dict("os.environ", CLAUDE_ENV)
     @patch("anthropic.Anthropic")
