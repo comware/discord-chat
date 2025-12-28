@@ -275,7 +275,7 @@ class TestBoundaryConditions:
 
         runner = CliRunner()
         with runner.isolated_filesystem():
-            result = runner.invoke(main, ["digest", "TestServer", "--hours", "1", "--output", "."])
+            result = runner.invoke(main, ["digest", "TestServer", "--hours", "1", "--file", "."])
 
         # Should succeed without validation error
         assert "Hours must be between" not in result.output
@@ -297,9 +297,7 @@ class TestBoundaryConditions:
 
         runner = CliRunner()
         with runner.isolated_filesystem():
-            result = runner.invoke(
-                main, ["digest", "TestServer", "--hours", "168", "--output", "."]
-            )
+            result = runner.invoke(main, ["digest", "TestServer", "--hours", "168", "--file", "."])
 
         # Should succeed without validation error
         assert "Hours must be between" not in result.output
@@ -355,8 +353,84 @@ class TestSymlinkAttackIntegration:
             runner = CliRunner()
             result = runner.invoke(
                 main,
-                ["digest", "TestServer", "--output", str(output_dir)],
+                ["digest", "TestServer", "--file", str(output_dir)],
             )
 
             # Command should succeed with normal directory
             assert result.exit_code == 0
+
+
+class TestChannelNameSecurity:
+    """Security tests for --channel option input validation."""
+
+    @patch("discord_chat.commands.digest.fetch_server_messages")
+    @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "t" * 60})
+    def test_channel_name_with_path_traversal_handled_safely(self, mock_fetch):
+        """Test that path traversal in channel name is handled safely.
+
+        Channel names are matched against actual channel names from Discord,
+        so path traversal attempts will just result in "channel not found".
+        """
+        mock_fetch.return_value = create_sample_data()
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["digest", "test-server", "--channel", "../../../etc/passwd"])
+
+        # Should fail with "not found" - channel names are matched exactly
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+
+    @patch("discord_chat.commands.digest.fetch_server_messages")
+    @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "t" * 60})
+    def test_channel_name_with_null_bytes(self, mock_fetch):
+        """Test channel names with null bytes are handled safely."""
+        mock_fetch.return_value = create_sample_data()
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["digest", "test-server", "--channel", "general\x00evil"])
+
+        # Should not match any channel
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+
+    @patch("discord_chat.commands.digest.fetch_server_messages")
+    @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "t" * 60})
+    def test_channel_name_with_newlines(self, mock_fetch):
+        """Test channel names with newlines are handled safely."""
+        mock_fetch.return_value = create_sample_data()
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["digest", "test-server", "--channel", "general\nevil"])
+
+        # Should not match any channel
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+
+    @patch("discord_chat.commands.digest.fetch_server_messages")
+    @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "t" * 60})
+    def test_channel_name_very_long_string(self, mock_fetch):
+        """Test very long channel names are handled safely."""
+        mock_fetch.return_value = create_sample_data()
+
+        runner = CliRunner()
+        long_channel = "a" * 10000  # Very long channel name
+        result = runner.invoke(main, ["digest", "test-server", "--channel", long_channel])
+
+        # Should fail gracefully (not found, not crash)
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+
+    @patch("discord_chat.commands.digest.fetch_server_messages")
+    @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "t" * 60})
+    def test_channel_name_with_special_chars(self, mock_fetch):
+        """Test channel names with special characters are handled safely."""
+        mock_fetch.return_value = create_sample_data()
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["digest", "test-server", "--channel", "general<script>alert('xss')</script>"]
+        )
+
+        # Should fail gracefully (channel matching is literal, no injection)
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()

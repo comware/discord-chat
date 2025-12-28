@@ -11,10 +11,12 @@ import click
 
 from discord_chat.services.discord_client import (
     DiscordClientError,
+    ServerDigestData,
     ServerNotFoundError,
     fetch_server_messages,
 )
 from discord_chat.services.llm import LLMError, get_provider
+from discord_chat.utils.console_output import Console, create_console, render_digest_to_console
 from discord_chat.utils.digest_formatter import (
     InvalidServerNameError,
     create_full_digest,
@@ -31,12 +33,17 @@ MAX_HOURS = 168  # 1 week maximum
 
 
 @contextmanager
-def progress_status(message: str, quiet: bool = False) -> Generator[None, None, None]:
+def progress_status(
+    message: str,
+    quiet: bool = False,
+    console: "Console | None" = None,
+) -> Generator[None, None, None]:
     """Context manager that shows operation status with timing.
 
     Args:
         message: Status message to display (e.g., "Fetching messages").
         quiet: If True, suppress output.
+        console: Optional Rich Console instance for output.
 
     Yields:
         Control back to the caller.
@@ -50,15 +57,18 @@ def progress_status(message: str, quiet: bool = False) -> Generator[None, None, 
         yield
         return
 
-    click.echo(f"{message}... ", nl=False)
+    if console is None:
+        console = create_console()
+
+    console.print(f"[dim]{message}...[/dim] ", end="")
     start = time.time()
     try:
         yield
         elapsed = time.time() - start
-        click.echo(f"done ({elapsed:.1f}s)")
+        console.print(f"[green]done[/green] [dim]({elapsed:.1f}s)[/dim]")
     except Exception:
         elapsed = time.time() - start
-        click.echo(f"failed ({elapsed:.1f}s)")
+        console.print(f"[red]failed[/red] [dim]({elapsed:.1f}s)[/dim]")
         raise
 
 
@@ -121,11 +131,12 @@ def write_file_secure(path: Path, content: str) -> None:
     help="LLM provider to use (auto-selects if not specified)",
 )
 @click.option(
-    "--output",
-    "-o",
+    "--file",
+    "-f",
+    "output_file",
     type=click.Path(),
-    default=".",
-    help="Output directory for the digest file (default: current directory)",
+    default=None,
+    help="Save digest to file. Specify a directory (auto-generates filename) or full path.",
 )
 @click.option(
     "--dry-run",
@@ -138,18 +149,45 @@ def write_file_secure(path: Path, content: str) -> None:
     "-q",
     is_flag=True,
     default=False,
-    help="Suppress console output (only write to file)",
+    help="Suppress all console output (use with --file for silent file save)",
+)
+@click.option(
+    "--no-color",
+    is_flag=True,
+    default=False,
+    envvar="NO_COLOR",
+    help="Disable colored/styled output (respects NO_COLOR env var)",
+)
+@click.option(
+    "--channel",
+    "-c",
+    default=None,
+    type=str,
+    help="Generate digest for a specific channel only (case-insensitive)",
 )
 def digest(
-    server_name: str, hours: int, llm: str | None, output: str, dry_run: bool, quiet: bool
+    server_name: str,
+    hours: int,
+    llm: str | None,
+    output_file: str | None,
+    dry_run: bool,
+    quiet: bool,
+    no_color: bool,
+    channel: str | None,
 ) -> None:
     """Generate a digest of Discord server activity.
 
-    Fetches messages from all channels in SERVER_NAME over the specified
-    time period and uses an LLM to create a summarized digest.
+    Fetches messages from all channels (or a specific channel) in SERVER_NAME
+    over the specified time period and uses an LLM to create a summarized digest.
 
-    Example:
-        discord-chat digest "tne.ai" --hours 3 --llm claude
+    By default, the digest is displayed in the terminal with markdown
+    formatting. Use --file to also save to disk.
+
+    Examples:
+        discord-chat digest "tne.ai" --hours 3
+        discord-chat digest "tne.ai" --channel general --hours 6
+        discord-chat digest "tne.ai" -c announcements --file .
+        discord-chat digest "tne.ai" --quiet --file .
 
     Requires DISCORD_BOT_TOKEN environment variable to be set.
     For LLM, set ANTHROPIC_API_KEY (Claude) or OPENAI_API_KEY (OpenAI).
@@ -179,18 +217,27 @@ def digest(
             "Create a Discord bot and set its token."
         )
 
+    # Create console for Rich output
+    console = create_console(no_color=no_color)
+
     # Helper for conditional output
-    def echo(msg: str) -> None:
+    def echo(msg: str, style: str | None = None) -> None:
         if not quiet:
-            click.echo(msg)
+            if style:
+                console.print(f"[{style}]{msg}[/{style}]")
+            else:
+                console.print(msg)
 
     if dry_run:
-        echo("[DRY RUN] Would fetch messages from Discord and generate digest")
+        echo("[DRY RUN] Would fetch messages from Discord and generate digest", "yellow")
 
     # Fetch messages from Discord
+    channel_info = f" (#{channel})" if channel else ""
     try:
         with progress_status(
-            f"Fetching messages from '{validated_server_name}' (last {hours}h)", quiet
+            f"Fetching messages from '{validated_server_name}'{channel_info} (last {hours}h)",
+            quiet=quiet,
+            console=console,
         ):
             data = fetch_server_messages(validated_server_name, hours)
     except ServerNotFoundError as e:
@@ -198,11 +245,40 @@ def digest(
     except DiscordClientError as e:
         raise click.ClickException(f"Discord error: {e}")
 
+    # Filter to specific channel if requested
+    if channel:
+        channel_lower = channel.lower().lstrip("#")  # Allow "#general" or "general"
+        matching_channels = [ch for ch in data.channels if ch.channel_name.lower() == channel_lower]
+
+        if not matching_channels:
+            available = sorted([ch.channel_name for ch in data.channels])
+            available_list = ", ".join(f"#{ch}" for ch in available) if available else "none"
+            raise click.ClickException(
+                f"Channel '#{channel}' not found in '{data.server_name}'. "
+                f"Available channels: {available_list}"
+            )
+
+        # Create new ServerDigestData with filtered channel
+        data = ServerDigestData(
+            server_name=data.server_name,
+            server_id=data.server_id,
+            channels=matching_channels,
+            start_time=data.start_time,
+            end_time=data.end_time,
+            total_messages=sum(len(ch.messages) for ch in matching_channels),
+        )
+
     if data.total_messages == 0:
-        echo(f"No messages found in '{data.server_name}' in the last {hours} hours.")
+        if channel:
+            echo(f"No messages found in #{channel} in the last {hours} hours.")
+        else:
+            echo(f"No messages found in '{data.server_name}' in the last {hours} hours.")
         return
 
-    echo(f"Found {data.total_messages} messages across {len(data.channels)} channels.")
+    if channel:
+        echo(f"Found {data.total_messages} messages in #{channel}.")
+    else:
+        echo(f"Found {data.total_messages} messages across {len(data.channels)} channels.")
 
     # Get LLM provider
     try:
@@ -216,21 +292,32 @@ def digest(
 
     # In dry-run mode, show preview and exit
     if dry_run:
-        echo("\n[DRY RUN] Preview:")
-        echo(f"  Server: {data.server_name}")
-        echo(f"  Channels: {len(data.channels)}")
-        echo(f"  Messages: {data.total_messages}")
-        echo(f"  Time range: {time_range}")
-        echo(f"  LLM provider: {provider.name}")
-        echo(f"  Estimated prompt size: ~{len(messages_text):,} characters")
-        output_file = Path(output) / get_default_output_filename(data.server_name)
-        echo(f"\n[DRY RUN] Would write digest to: {output_file}")
-        echo("[DRY RUN] No API calls made. Remove --dry-run to generate digest.")
+        echo("\n[DRY RUN] Preview:", "yellow")
+        echo(f"  [bold]Server:[/bold] {data.server_name}")
+        if channel:
+            echo(f"  [bold]Channel filter:[/bold] #{channel}")
+        echo(f"  [bold]Channels:[/bold] {len(data.channels)}")
+        echo(f"  [bold]Messages:[/bold] {data.total_messages}")
+        echo(f"  [bold]Time range:[/bold] {time_range}")
+        echo(f"  [bold]LLM provider:[/bold] {provider.name}")
+        echo(f"  [bold]Estimated prompt size:[/bold] ~{len(messages_text):,} characters")
+        if output_file:
+            preview_path = Path(output_file)
+            if preview_path.is_dir() or (not preview_path.suffix and not preview_path.exists()):
+                preview_path = preview_path / get_default_output_filename(data.server_name)
+            echo(f"\n[DRY RUN] Would write digest to: {preview_path}", "yellow")
+        else:
+            echo("\n[DRY RUN] Would display digest to screen (no file output)", "yellow")
+        echo("[DRY RUN] No API calls made. Remove --dry-run to generate digest.", "yellow")
         return
 
     # Generate digest with LLM
     try:
-        with progress_status(f"Generating digest with {provider.name}", quiet):
+        with progress_status(
+            f"Generating digest with {provider.name}",
+            quiet=quiet,
+            console=console,
+        ):
             llm_digest = provider.generate_digest(
                 messages_text=messages_text,
                 server_name=data.server_name,
@@ -242,20 +329,25 @@ def digest(
         raise click.ClickException(f"LLM error: {e}")
 
     # Create full digest document
-    full_digest = create_full_digest(data, llm_digest, provider.name)
+    full_digest = create_full_digest(data, llm_digest, provider.name, channel)
 
-    # Print to console (unless quiet mode)
-    if not quiet:
-        click.echo("\n" + "=" * 60)
-        click.echo(full_digest)
-        click.echo("=" * 60 + "\n")
+    # Render to screen with Rich markdown (unless quiet mode)
+    render_digest_to_console(full_digest, console=console, quiet=quiet)
 
-    # Save to file
-    output_dir = Path(output)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    filename = get_default_output_filename(data.server_name)
-    output_path = output_dir / filename
+    # Save to file only if --file flag is provided
+    if output_file:
+        output_path = Path(output_file)
 
-    write_file_secure(output_path, full_digest)
-    security_logger.log_file_operation("write", str(output_path), "0600")
-    echo(f"Digest saved to: {output_path}")
+        # Determine if output_file is a directory or a file path
+        if output_path.is_dir() or (not output_path.suffix and not output_path.exists()):
+            # It's a directory path - generate filename
+            output_path.mkdir(parents=True, exist_ok=True)
+            filename = get_default_output_filename(data.server_name)
+            output_path = output_path / filename
+        else:
+            # It's a file path - ensure parent directory exists
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        write_file_secure(output_path, full_digest)
+        security_logger.log_file_operation("write", str(output_path), "0600")
+        echo(f"Digest saved to: {output_path}", "green")

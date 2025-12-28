@@ -5,6 +5,8 @@ MAKEFLAGS += --silent
 
 # Configurable hours for Discord commands (default: 24)
 HOURS ?= 24
+# Optional channel filter for digest (default: all channels)
+CHANNEL ?=
 
 # Default target
 .DEFAULT_GOAL := help
@@ -51,5 +53,9 @@ all: hooks check ## Install hooks and run all checks
 tne-activity: ## Show message counts per channel for tne.ai (HOURS=24)
 	uv run python cli.py activity "tne.ai" --hours $(HOURS)
 
-tne-digest: ## Generate digest for tne.ai Discord server (HOURS=24)
-	uv run python cli.py digest "tne.ai" --hours $(HOURS) --output tne-digest --quiet
+tne-digest: ## Generate digest for tne.ai Discord server (HOURS=24, CHANNEL=optional)
+ifdef CHANNEL
+	uv run python cli.py digest "tne.ai" --hours $(HOURS) --channel "$(CHANNEL)"
+else
+	uv run python cli.py digest "tne.ai" --hours $(HOURS)
+endif

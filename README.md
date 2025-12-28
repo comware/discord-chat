@@ -38,25 +38,60 @@ make version
 # Generate a digest of Discord server activity
 uv run python cli.py digest "server-name" --hours 6
 
+# Generate a digest for a specific channel only
+uv run python cli.py digest "server-name" --channel general --hours 6
+uv run python cli.py digest "server-name" -c announcements --hours 24
+
 # Use specific LLM provider
 uv run python cli.py digest "server-name" --llm claude
 uv run python cli.py digest "server-name" --llm openai
 
-# Save to specific output directory
-uv run python cli.py digest "server-name" --output ./digests/
+# Save to file (auto-generates filename in directory, or specify full path)
+uv run python cli.py digest "server-name" --file ./digests/
+uv run python cli.py digest "server-name" --file ./my-digest.md
+
+# Preview without calling LLM API
+uv run python cli.py digest "server-name" --dry-run
+
+# Silent mode (useful for cron jobs)
+uv run python cli.py digest "server-name" --quiet --file ./digests/
 ```
 
 ### Digest Command
 
-The `digest` command fetches messages from all channels in a Discord server and generates an AI-powered summary.
+The `digest` command fetches messages from a Discord server (all channels or a specific channel) and generates an AI-powered summary.
 
 **Arguments:**
 - `SERVER_NAME` - Name of the Discord server (case-insensitive)
 
 **Options:**
-- `--hours, -h` - Hours to look back (default: 6)
+- `--hours, -h` - Hours to look back (default: 6, max: 168)
+- `--channel, -c` - Generate digest for a specific channel only (case-insensitive)
 - `--llm, -l` - LLM provider: `claude` or `openai` (auto-selects if not specified)
-- `--output, -o` - Output directory for the digest file (default: current directory)
+- `--file, -f` - Save digest to file (directory for auto-filename, or full path)
+- `--dry-run` - Preview what would be done without calling the LLM API
+- `--quiet, -q` - Suppress console output (use with `--file` for silent operation)
+- `--no-color` - Disable colored output (also respects `NO_COLOR` env var)
+
+### Makefile Shortcuts
+
+For the `tne.ai` server, convenient Makefile targets are available:
+
+```bash
+# Generate digest for all channels (default: 24 hours)
+make tne-digest
+
+# Generate digest for last 6 hours
+make tne-digest HOURS=6
+
+# Generate digest for a specific channel
+make tne-digest CHANNEL=general
+make tne-digest CHANNEL=announcements HOURS=12
+
+# Show message activity per channel
+make tne-activity
+make tne-activity HOURS=48
+```
 
 ## Development
 
@@ -80,7 +115,8 @@ make check
 discord_chat/           # Main package
 ├── commands/           # CLI commands (one file per command)
 │   ├── version.py      # Version command
-│   └── digest.py       # Digest command
+│   ├── digest.py       # Digest command
+│   └── activity.py     # Activity command
 ├── services/           # Service modules
 │   ├── discord_client.py  # Discord API integration
 │   └── llm/            # LLM providers
@@ -88,7 +124,9 @@ discord_chat/           # Main package
 │       ├── claude.py   # Claude provider
 │       └── openai_provider.py  # OpenAI provider
 └── utils/              # Utility modules
-    └── digest_formatter.py  # Digest formatting
+    ├── digest_formatter.py  # Digest formatting
+    ├── console_output.py    # Rich console output
+    └── security_logger.py   # Security event logging
 
 tests/                  # Test files
 hooks/                  # Git hooks

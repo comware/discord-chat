@@ -114,7 +114,8 @@ class TestDigestDryRun:
         assert "Messages:" in result.output
         assert "LLM provider:" in result.output
         assert "Estimated prompt size:" in result.output
-        assert "Would write digest to:" in result.output
+        # Without --file flag, it should indicate screen output
+        assert "Would display digest to screen" in result.output
         assert "No API calls made" in result.output
 
     @patch("discord_chat.commands.digest.fetch_server_messages")
@@ -153,7 +154,7 @@ class TestDigestQuiet:
 
         runner = CliRunner()
         with runner.isolated_filesystem():
-            result = runner.invoke(main, ["digest", "test-server", "--quiet", "--output", "."])
+            result = runner.invoke(main, ["digest", "test-server", "--quiet", "--file", "."])
 
         assert result.exit_code == 0
         # Should not have verbose output
@@ -175,7 +176,7 @@ class TestDigestQuiet:
 
         runner = CliRunner()
         with runner.isolated_filesystem():
-            result = runner.invoke(main, ["digest", "test-server", "--quiet", "--output", "."])
+            result = runner.invoke(main, ["digest", "test-server", "--quiet", "--file", "."])
 
             assert result.exit_code == 0
             # Check that a file was created
@@ -222,7 +223,7 @@ class TestDigestQuietShortFlag:
 
         runner = CliRunner()
         with runner.isolated_filesystem():
-            result = runner.invoke(main, ["digest", "test-server", "-q", "--output", "."])
+            result = runner.invoke(main, ["digest", "test-server", "-q", "--file", "."])
 
         assert result.exit_code == 0
         assert "Fetching messages" not in result.output
@@ -265,7 +266,7 @@ class TestProgressStatus:
 
         runner = CliRunner()
         with runner.isolated_filesystem():
-            result = runner.invoke(main, ["digest", "test-server", "--output", "."])
+            result = runner.invoke(main, ["digest", "test-server", "--file", "."])
 
         assert result.exit_code == 0
         # Should show timing like "done (0.1s)"
