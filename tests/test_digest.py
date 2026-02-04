@@ -22,59 +22,76 @@ from discord_chat.utils.digest_formatter import (
 
 
 # Sample test data
-def create_sample_data() -> ServerDigestData:
-    """Create sample server data for testing."""
+def create_sample_data(channel: str | None = None) -> ServerDigestData:
+    """Create sample server data for testing.
+
+    Args:
+        channel: If specified, only include matching channel (mimics fetcher filtering).
+    """
     end_time = datetime.now(UTC)
     start_time = end_time - timedelta(hours=6)
+
+    all_channels = [
+        ChannelMessages(
+            channel_name="general",
+            channel_id=111,
+            messages=[
+                {
+                    "id": 1,
+                    "author": "Alice",
+                    "author_id": 1001,
+                    "content": "Hello everyone!",
+                    "timestamp": "2024-01-01T12:00:00",
+                    "attachments": [],
+                    "reactions": [],
+                },
+                {
+                    "id": 2,
+                    "author": "Bob",
+                    "author_id": 1002,
+                    "content": "Hi Alice!",
+                    "timestamp": "2024-01-01T12:05:00",
+                    "attachments": [],
+                    "reactions": [{"emoji": "👋", "count": 2}],
+                },
+            ],
+        ),
+        ChannelMessages(
+            channel_name="dev",
+            channel_id=222,
+            messages=[
+                {
+                    "id": 3,
+                    "author": "Charlie",
+                    "author_id": 1003,
+                    "content": "Fixed the bug in PR #42",
+                    "timestamp": "2024-01-01T13:00:00",
+                    "attachments": ["screenshot.png"],
+                    "reactions": [],
+                },
+            ],
+        ),
+    ]
+
+    if channel:
+        channel_lower = channel.lower().lstrip("#")
+        all_channels = [ch for ch in all_channels if ch.channel_name.lower() == channel_lower]
+
+    total = sum(len(ch.messages) for ch in all_channels)
 
     return ServerDigestData(
         server_name="Test Server",
         server_id=123456789,
-        channels=[
-            ChannelMessages(
-                channel_name="general",
-                channel_id=111,
-                messages=[
-                    {
-                        "id": 1,
-                        "author": "Alice",
-                        "author_id": 1001,
-                        "content": "Hello everyone!",
-                        "timestamp": "2024-01-01T12:00:00",
-                        "attachments": [],
-                        "reactions": [],
-                    },
-                    {
-                        "id": 2,
-                        "author": "Bob",
-                        "author_id": 1002,
-                        "content": "Hi Alice!",
-                        "timestamp": "2024-01-01T12:05:00",
-                        "attachments": [],
-                        "reactions": [{"emoji": "👋", "count": 2}],
-                    },
-                ],
-            ),
-            ChannelMessages(
-                channel_name="dev",
-                channel_id=222,
-                messages=[
-                    {
-                        "id": 3,
-                        "author": "Charlie",
-                        "author_id": 1003,
-                        "content": "Fixed the bug in PR #42",
-                        "timestamp": "2024-01-01T13:00:00",
-                        "attachments": ["screenshot.png"],
-                        "reactions": [],
-                    },
-                ],
-            ),
-        ],
+        channels=all_channels,
         start_time=start_time,
         end_time=end_time,
-        total_messages=3,
+        total_messages=total,
     )
+
+
+def mock_fetch_side_effect(server_name, hours=6, channel=None):
+    """Side effect for mocking fetch_server_messages with channel support."""
+    return create_sample_data(channel=channel)
 
 
 class TestDigestFormatter:
@@ -132,6 +149,29 @@ class TestDigestFormatter:
         # Should not contain special chars
         assert "@" not in filename
         assert "#" not in filename
+
+    def test_get_default_output_filename_with_channel(self):
+        """Test filename uses channel name when provided."""
+        filename = get_default_output_filename("tne.ai", channel="app-bravo")
+
+        assert filename.startswith("app-bravo-")
+        assert filename.endswith(".md")
+        assert "digest-" not in filename
+
+    def test_get_default_output_filename_with_channel_hash_prefix(self):
+        """Test channel name with # prefix is stripped."""
+        filename = get_default_output_filename("tne.ai", channel="#general")
+
+        assert filename.startswith("general-")
+        assert "#" not in filename
+
+    def test_get_default_output_filename_channel_special_chars(self):
+        """Test channel name with special chars is sanitized."""
+        filename = get_default_output_filename("tne.ai", channel="my channel!@#")
+
+        assert filename.endswith(".md")
+        assert "!" not in filename
+        assert "@" not in filename
 
 
 class TestServerNameValidation:
@@ -495,7 +535,7 @@ class TestDigestChannelFilter:
     @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "test-token"})
     def test_channel_filter_single_channel(self, mock_get_provider, mock_fetch):
         """Test digest with --channel filters to single channel."""
-        mock_fetch.return_value = create_sample_data()
+        mock_fetch.side_effect = mock_fetch_side_effect
 
         mock_provider = MagicMock(spec=LLMProvider)
         mock_provider.name = "TestLLM"
@@ -514,7 +554,7 @@ class TestDigestChannelFilter:
     @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "test-token"})
     def test_channel_filter_case_insensitive(self, mock_get_provider, mock_fetch):
         """Test --channel is case-insensitive."""
-        mock_fetch.return_value = create_sample_data()
+        mock_fetch.side_effect = mock_fetch_side_effect
 
         mock_provider = MagicMock(spec=LLMProvider)
         mock_provider.name = "TestLLM"
@@ -531,24 +571,21 @@ class TestDigestChannelFilter:
     @patch("discord_chat.commands.digest.fetch_server_messages")
     @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "test-token"})
     def test_channel_filter_not_found(self, mock_fetch):
-        """Test error when specified channel doesn't exist."""
-        mock_fetch.return_value = create_sample_data()
+        """Test message when specified channel has no messages."""
+        mock_fetch.side_effect = mock_fetch_side_effect
 
         runner = CliRunner()
         result = runner.invoke(main, ["digest", "test-server", "--channel", "nonexistent"])
 
-        assert result.exit_code != 0
-        assert "not found" in result.output.lower()
-        # Should list available channels
-        assert "#dev" in result.output
-        assert "#general" in result.output
+        assert result.exit_code == 0
+        assert "no messages found" in result.output.lower()
 
     @patch("discord_chat.commands.digest.fetch_server_messages")
     @patch("discord_chat.commands.digest.get_provider")
     @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "test-token"})
     def test_channel_filter_with_dry_run(self, mock_get_provider, mock_fetch):
         """Test --dry-run shows channel filter."""
-        mock_fetch.return_value = create_sample_data()
+        mock_fetch.side_effect = mock_fetch_side_effect
 
         mock_provider = MagicMock(spec=LLMProvider)
         mock_provider.name = "TestLLM"
@@ -566,7 +603,7 @@ class TestDigestChannelFilter:
     @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "test-token"})
     def test_channel_filter_updates_message_count(self, mock_get_provider, mock_fetch):
         """Test total_messages reflects filtered channel only."""
-        mock_fetch.return_value = create_sample_data()
+        mock_fetch.side_effect = mock_fetch_side_effect
 
         mock_provider = MagicMock(spec=LLMProvider)
         mock_provider.name = "TestLLM"
@@ -585,7 +622,7 @@ class TestDigestChannelFilter:
     @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "test-token"})
     def test_channel_filter_short_flag(self, mock_get_provider, mock_fetch):
         """Test -c short flag works."""
-        mock_fetch.return_value = create_sample_data()
+        mock_fetch.side_effect = mock_fetch_side_effect
 
         mock_provider = MagicMock(spec=LLMProvider)
         mock_provider.name = "TestLLM"
@@ -603,7 +640,7 @@ class TestDigestChannelFilter:
     @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "test-token"})
     def test_channel_filter_with_hash_prefix(self, mock_get_provider, mock_fetch):
         """Test channel filter accepts #channel format."""
-        mock_fetch.return_value = create_sample_data()
+        mock_fetch.side_effect = mock_fetch_side_effect
 
         mock_provider = MagicMock(spec=LLMProvider)
         mock_provider.name = "TestLLM"
@@ -621,18 +658,13 @@ class TestDigestChannelFilter:
     @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "test-token"})
     def test_channel_filter_empty_channel(self, mock_fetch):
         """Test filtering to channel with no messages shows empty digest message."""
-        # Create data with an empty channel
-        data = create_sample_data()
-        data.channels.append(
-            ChannelMessages(channel_name="empty-channel", channel_id=333, messages=[])
-        )
-        mock_fetch.return_value = data
+        mock_fetch.side_effect = mock_fetch_side_effect
 
         runner = CliRunner()
-        result = runner.invoke(main, ["digest", "test-server", "--channel", "empty-channel"])
+        result = runner.invoke(main, ["digest", "test-server", "--channel", "nonexistent"])
 
         assert result.exit_code == 0
-        assert "No messages found in #empty-channel" in result.output
+        assert "No messages found in #nonexistent" in result.output
 
     def test_channel_filter_in_help(self):
         """Test --channel appears in help."""

@@ -11,7 +11,6 @@ import click
 
 from discord_chat.services.discord_client import (
     DiscordClientError,
-    ServerDigestData,
     ServerNotFoundError,
     fetch_server_messages,
 )
@@ -29,7 +28,8 @@ from discord_chat.utils.security_logger import get_security_logger
 
 # Constants for validation
 MIN_HOURS = 1
-MAX_HOURS = 168  # 1 week maximum
+MAX_HOURS = 168  # 1 week maximum (all channels)
+MAX_HOURS_SINGLE_CHANNEL = 720  # 30 days (single channel)
 
 
 @contextmanager
@@ -201,13 +201,19 @@ def digest(
         security_logger.log_input_validation_failure("server_name", server_name, str(e))
         raise click.ClickException(str(e))
 
-    # Validate hours range
-    if hours < MIN_HOURS or hours > MAX_HOURS:
+    # Validate hours range — allow longer windows for single-channel queries
+    max_hours = MAX_HOURS_SINGLE_CHANNEL if channel else MAX_HOURS
+    if hours < MIN_HOURS or hours > max_hours:
         security_logger.log_input_validation_failure(
-            "hours", str(hours), f"Must be between {MIN_HOURS} and {MAX_HOURS}"
+            "hours", str(hours), f"Must be between {MIN_HOURS} and {max_hours}"
         )
+        if not channel and hours > MAX_HOURS:
+            raise click.ClickException(
+                f"Hours must be between {MIN_HOURS} and {MAX_HOURS} for all channels. "
+                f"Got: {hours}. Use --channel to query up to {MAX_HOURS_SINGLE_CHANNEL}h (30 days)."
+            )
         raise click.ClickException(
-            f"Hours must be between {MIN_HOURS} and {MAX_HOURS}. Got: {hours}"
+            f"Hours must be between {MIN_HOURS} and {max_hours}. Got: {hours}"
         )
 
     # Validate environment
@@ -239,34 +245,11 @@ def digest(
             quiet=quiet,
             console=console,
         ):
-            data = fetch_server_messages(validated_server_name, hours)
+            data = fetch_server_messages(validated_server_name, hours, channel=channel)
     except ServerNotFoundError as e:
         raise click.ClickException(str(e))
     except DiscordClientError as e:
         raise click.ClickException(f"Discord error: {e}")
-
-    # Filter to specific channel if requested
-    if channel:
-        channel_lower = channel.lower().lstrip("#")  # Allow "#general" or "general"
-        matching_channels = [ch for ch in data.channels if ch.channel_name.lower() == channel_lower]
-
-        if not matching_channels:
-            available = sorted([ch.channel_name for ch in data.channels])
-            available_list = ", ".join(f"#{ch}" for ch in available) if available else "none"
-            raise click.ClickException(
-                f"Channel '#{channel}' not found in '{data.server_name}'. "
-                f"Available channels: {available_list}"
-            )
-
-        # Create new ServerDigestData with filtered channel
-        data = ServerDigestData(
-            server_name=data.server_name,
-            server_id=data.server_id,
-            channels=matching_channels,
-            start_time=data.start_time,
-            end_time=data.end_time,
-            total_messages=sum(len(ch.messages) for ch in matching_channels),
-        )
 
     if data.total_messages == 0:
         if channel:
@@ -342,7 +325,7 @@ def digest(
         if output_path.is_dir() or (not output_path.suffix and not output_path.exists()):
             # It's a directory path - generate filename
             output_path.mkdir(parents=True, exist_ok=True)
-            filename = get_default_output_filename(data.server_name)
+            filename = get_default_output_filename(data.server_name, channel=channel)
             output_path = output_path / filename
         else:
             # It's a file path - ensure parent directory exists

@@ -24,35 +24,53 @@ from discord_chat.services.discord_client import ChannelMessages, ServerDigestDa
 from discord_chat.services.llm.base import LLMProvider
 
 
-def create_sample_data(hours: int = 6) -> ServerDigestData:
-    """Create sample server data for testing."""
+def create_sample_data(hours: int = 6, channel: str | None = None) -> ServerDigestData:
+    """Create sample server data for testing.
+
+    Args:
+        hours: Hours lookback.
+        channel: If specified, only include matching channel (mimics fetcher filtering).
+    """
     end_time = datetime.now(UTC)
     start_time = end_time - timedelta(hours=hours)
+
+    all_channels = [
+        ChannelMessages(
+            channel_name="general",
+            channel_id=111,
+            messages=[
+                {
+                    "id": 1,
+                    "author": "Alice",
+                    "author_id": 1001,
+                    "content": "Hello everyone!",
+                    "timestamp": "2024-01-01T12:00:00",
+                    "attachments": [],
+                    "reactions": [],
+                },
+            ],
+        ),
+    ]
+
+    if channel:
+        channel_lower = channel.lower().lstrip("#")
+        all_channels = [ch for ch in all_channels if ch.channel_name.lower() == channel_lower]
+
+    total = sum(len(ch.messages) for ch in all_channels)
 
     return ServerDigestData(
         server_name="Test Server",
         server_id=123456789,
-        channels=[
-            ChannelMessages(
-                channel_name="general",
-                channel_id=111,
-                messages=[
-                    {
-                        "id": 1,
-                        "author": "Alice",
-                        "author_id": 1001,
-                        "content": "Hello everyone!",
-                        "timestamp": "2024-01-01T12:00:00",
-                        "attachments": [],
-                        "reactions": [],
-                    },
-                ],
-            ),
-        ],
+        channels=all_channels,
         start_time=start_time,
         end_time=end_time,
-        total_messages=1,
+        total_messages=total,
     )
+
+
+def mock_fetch_side_effect(server_name, hours=6, channel=None):
+    """Side effect for mocking fetch_server_messages with channel support."""
+    return create_sample_data(hours=hours, channel=channel)
 
 
 class TestWriteFileSecureSymlinkAttacks:
@@ -369,68 +387,68 @@ class TestChannelNameSecurity:
         """Test that path traversal in channel name is handled safely.
 
         Channel names are matched against actual channel names from Discord,
-        so path traversal attempts will just result in "channel not found".
+        so path traversal attempts will just result in no messages found.
         """
-        mock_fetch.return_value = create_sample_data()
+        mock_fetch.side_effect = mock_fetch_side_effect
 
         runner = CliRunner()
         result = runner.invoke(main, ["digest", "test-server", "--channel", "../../../etc/passwd"])
 
-        # Should fail with "not found" - channel names are matched exactly
-        assert result.exit_code != 0
-        assert "not found" in result.output.lower()
+        # Should handle gracefully - no matching channel, no messages
+        assert result.exit_code == 0
+        assert "no messages found" in result.output.lower()
 
     @patch("discord_chat.commands.digest.fetch_server_messages")
     @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "t" * 60})
     def test_channel_name_with_null_bytes(self, mock_fetch):
         """Test channel names with null bytes are handled safely."""
-        mock_fetch.return_value = create_sample_data()
+        mock_fetch.side_effect = mock_fetch_side_effect
 
         runner = CliRunner()
         result = runner.invoke(main, ["digest", "test-server", "--channel", "general\x00evil"])
 
-        # Should not match any channel
-        assert result.exit_code != 0
-        assert "not found" in result.output.lower()
+        # Should not match any channel - handles gracefully
+        assert result.exit_code == 0
+        assert "no messages found" in result.output.lower()
 
     @patch("discord_chat.commands.digest.fetch_server_messages")
     @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "t" * 60})
     def test_channel_name_with_newlines(self, mock_fetch):
         """Test channel names with newlines are handled safely."""
-        mock_fetch.return_value = create_sample_data()
+        mock_fetch.side_effect = mock_fetch_side_effect
 
         runner = CliRunner()
         result = runner.invoke(main, ["digest", "test-server", "--channel", "general\nevil"])
 
-        # Should not match any channel
-        assert result.exit_code != 0
-        assert "not found" in result.output.lower()
+        # Should not match any channel - handles gracefully
+        assert result.exit_code == 0
+        assert "no messages found" in result.output.lower()
 
     @patch("discord_chat.commands.digest.fetch_server_messages")
     @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "t" * 60})
     def test_channel_name_very_long_string(self, mock_fetch):
         """Test very long channel names are handled safely."""
-        mock_fetch.return_value = create_sample_data()
+        mock_fetch.side_effect = mock_fetch_side_effect
 
         runner = CliRunner()
         long_channel = "a" * 10000  # Very long channel name
         result = runner.invoke(main, ["digest", "test-server", "--channel", long_channel])
 
-        # Should fail gracefully (not found, not crash)
-        assert result.exit_code != 0
-        assert "not found" in result.output.lower()
+        # Should handle gracefully (no match, not crash)
+        assert result.exit_code == 0
+        assert "no messages found" in result.output.lower()
 
     @patch("discord_chat.commands.digest.fetch_server_messages")
     @patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "t" * 60})
     def test_channel_name_with_special_chars(self, mock_fetch):
         """Test channel names with special characters are handled safely."""
-        mock_fetch.return_value = create_sample_data()
+        mock_fetch.side_effect = mock_fetch_side_effect
 
         runner = CliRunner()
         result = runner.invoke(
             main, ["digest", "test-server", "--channel", "general<script>alert('xss')</script>"]
         )
 
-        # Should fail gracefully (channel matching is literal, no injection)
-        assert result.exit_code != 0
-        assert "not found" in result.output.lower()
+        # Should handle gracefully (channel matching is literal, no injection)
+        assert result.exit_code == 0
+        assert "no messages found" in result.output.lower()

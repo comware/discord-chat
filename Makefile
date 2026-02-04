@@ -55,7 +55,8 @@ tne-activity: ## Show message counts per channel for tne.ai (HOURS=24)
 
 tne-digest: ## Generate digest for tne.ai Discord server (HOURS=24, CHANNEL=optional)
 ifdef CHANNEL
-	uv run python cli.py digest "tne.ai" --hours $(HOURS) --channel "$(CHANNEL)"
+	uv run python cli.py digest "tne.ai" --hours $(HOURS) --channel "$(CHANNEL)" --quiet --file tne-digest
 else
-	uv run python cli.py digest "tne.ai" --hours $(HOURS)
+	uv run python cli.py digest "tne.ai" --hours $(HOURS) --quiet --file tne-digest
 endif
+	@echo "FILE=$$(ls -t tne-digest/*.md 2>/dev/null | head -1)"

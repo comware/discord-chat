@@ -1140,7 +1140,7 @@ class TestFetchServerMessages:
                         fetcher = DiscordMessageFetcher()
 
                         # Mock _fetch_server_messages_impl
-                        async def mock_impl(server_name, hours):
+                        async def mock_impl(server_name, hours, channel=None):
                             return ServerDigestData(
                                 server_name=server_name,
                                 server_id=123,
@@ -1170,7 +1170,7 @@ class TestFetchServerMessages:
                         fetcher._client.close = AsyncMock()
 
                         # Mock implementation that takes too long
-                        async def mock_impl(server_name, hours):
+                        async def mock_impl(server_name, hours, channel=None):
                             await asyncio.sleep(10)  # Too long
                             return ServerDigestData(
                                 server_name=server_name,
@@ -1209,7 +1209,7 @@ class TestFetchServerMessages:
                         # Check that property returns correct value
                         assert fetcher.operation_timeout == 120.0
 
-                        async def mock_impl(server_name, hours):
+                        async def mock_impl(server_name, hours, channel=None):
                             return ServerDigestData(
                                 server_name=server_name,
                                 server_id=123,
@@ -1244,7 +1244,7 @@ class TestFetchServerMessages:
                         fetcher._client.is_closed = Mock(return_value=False)
                         fetcher._client.close = AsyncMock()
 
-                        async def mock_impl(server_name, hours):
+                        async def mock_impl(server_name, hours, channel=None):
                             await asyncio.sleep(1)
                             return ServerDigestData(
                                 server_name=server_name,
@@ -1278,7 +1278,7 @@ class TestSynchronousWrapper:
             mock_fetcher_class.return_value = mock_fetcher
 
             # Mock the async method
-            async def mock_async_fetch(server_name, hours):
+            async def mock_async_fetch(server_name, hours, channel=None):
                 return ServerDigestData(
                     server_name=server_name,
                     server_id=123,

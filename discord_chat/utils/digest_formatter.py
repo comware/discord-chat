@@ -155,11 +155,24 @@ def create_full_digest(
     return header + llm_digest
 
 
-def get_default_output_filename(server_name: str) -> str:
+def _sanitize_for_filename(name: str) -> str:
+    """Sanitize a string for safe use in filenames.
+
+    Only allows alphanumeric, hyphen, underscore. Dots excluded to prevent
+    hidden files or extension manipulation.
+    """
+    safe = "".join(c if c.isalnum() or c in "_- " else "_" for c in name)
+    safe = safe.replace(" ", "-").lower()
+    return safe.strip("-_")
+
+
+def get_default_output_filename(server_name: str, channel: str | None = None) -> str:
     """Generate a default output filename.
 
     Args:
         server_name: Name of the Discord server.
+        channel: Optional channel name. When provided, uses channel name
+            instead of server name as the filename prefix.
 
     Returns:
         Filename with timestamp.
@@ -170,20 +183,18 @@ def get_default_output_filename(server_name: str) -> str:
     # Validate first to block path traversal attempts
     validated_name = validate_server_name(server_name)
 
-    # Sanitize server name for filename - only allow alphanumeric, hyphen, underscore
-    # Explicitly exclude dots to prevent hidden files or extension manipulation
-    safe_name = "".join(c if c.isalnum() or c in "_- " else "_" for c in validated_name)
-    safe_name = safe_name.replace(" ", "-").lower()
-
-    # Remove any leading/trailing underscores or hyphens
-    safe_name = safe_name.strip("-_")
-
-    # Ensure we have something left
-    if not safe_name:
-        safe_name = "unknown-server"
-
     timestamp = datetime.now().strftime("%Y%m%d-%H%M")
-    filename = f"digest-{safe_name}-{timestamp}.md"
+
+    if channel:
+        safe_channel = _sanitize_for_filename(channel.lstrip("#"))
+        if safe_channel:
+            filename = f"{safe_channel}-{timestamp}.md"
+        else:
+            safe_name = _sanitize_for_filename(validated_name) or "unknown-server"
+            filename = f"digest-{safe_name}-{timestamp}.md"
+    else:
+        safe_name = _sanitize_for_filename(validated_name) or "unknown-server"
+        filename = f"digest-{safe_name}-{timestamp}.md"
 
     # Final safety check - ensure no path separators snuck through
     if "/" in filename or "\\" in filename:

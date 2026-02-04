@@ -323,13 +323,15 @@ class DiscordMessageFetcher:
         server_name: str,
         hours: int = 6,
         timeout: float | None = None,
+        channel: str | None = None,
     ) -> ServerDigestData:
-        """Fetch messages from all channels in a server.
+        """Fetch messages from all channels (or a single channel) in a server.
 
         Args:
             server_name: Name of the Discord server (case-insensitive).
             hours: Number of hours to look back for messages.
             timeout: Overall operation timeout in seconds. Defaults to OPERATION_TIMEOUT.
+            channel: Optional channel name to fetch (skips other channels).
 
         Returns:
             ServerDigestData containing all messages from the time window.
@@ -341,7 +343,7 @@ class DiscordMessageFetcher:
 
         try:
             return await asyncio.wait_for(
-                self._fetch_server_messages_impl(server_name, hours),
+                self._fetch_server_messages_impl(server_name, hours, channel=channel),
                 timeout=operation_timeout,
             )
         except TimeoutError:
@@ -357,6 +359,7 @@ class DiscordMessageFetcher:
         self,
         server_name: str,
         hours: int,
+        channel: str | None = None,
     ) -> ServerDigestData:
         """Internal implementation of fetch_server_messages.
 
@@ -376,8 +379,11 @@ class DiscordMessageFetcher:
                 # Find the server
                 guild = self._find_server_by_name(server_name)
 
-                # Get all text channels
+                # Get text channels — filter to single channel if specified
                 text_channels = [ch for ch in guild.channels if isinstance(ch, discord.TextChannel)]
+                if channel:
+                    channel_lower = channel.lower().lstrip("#")
+                    text_channels = [ch for ch in text_channels if ch.name.lower() == channel_lower]
 
                 # Fetch messages from channels with rate limiting
                 # Use semaphore to limit concurrent API calls
@@ -435,7 +441,9 @@ class DiscordMessageFetcher:
             )
 
 
-def fetch_server_messages(server_name: str, hours: int = 6) -> ServerDigestData:
+def fetch_server_messages(
+    server_name: str, hours: int = 6, channel: str | None = None
+) -> ServerDigestData:
     """Synchronous wrapper for fetching server messages.
 
     This is the main entry point for CLI usage.
@@ -443,9 +451,10 @@ def fetch_server_messages(server_name: str, hours: int = 6) -> ServerDigestData:
     Args:
         server_name: Name of the Discord server.
         hours: Number of hours to look back.
+        channel: Optional channel name to fetch (skips other channels).
 
     Returns:
         ServerDigestData containing all messages.
     """
     fetcher = DiscordMessageFetcher()
-    return asyncio.run(fetcher.fetch_server_messages(server_name, hours))
+    return asyncio.run(fetcher.fetch_server_messages(server_name, hours, channel=channel))
