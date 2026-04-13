@@ -9,7 +9,7 @@ dependencies = [
     "discord.py>=2.3.0",
     "anthropic>=0.18.0",
     "openai>=1.12.0",
-    "python-dotenv>=1.0.0",
+    "python-dotenv>=1.2.2",
     "rich>=13.0.0",
     # Security: Pin vulnerable transitive dependencies to patched versions
     "cryptography>=44.0.1",  # CVE-2024-12797 fix
