@@ -5,7 +5,7 @@ description = "A CLI application"
 readme = "README.md"
 requires-python = ">=3.11.12"
 dependencies = [
-    "click>=8.1.0",
+    "click>=8.3.2",
     "discord.py>=2.3.0",
     "anthropic>=0.18.0",
     "openai>=1.12.0",
